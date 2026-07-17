@@ -156,7 +156,7 @@ def configuration() -> str:
 
 
 def qt_flavor() -> str:
-    value = env_value("TDESKTOP_QT_FLAVOR", "qt6").lower()
+    value = env_value("TDESKTOP_QT_FLAVOR", "default").lower()
     if value in {"", "default", "qt5", "legacy"}:
         return ""
     if value == "qt6":
@@ -210,8 +210,12 @@ def required_build_files(src: Path) -> list[Path]:
     ]
 
 
+def official_parameters() -> bool:
+    return env_bool("TDESKTOP_OFFICIAL_PARAMETERS", True)
+
+
 def cache_key(src: Path, sdk: str, arch: str, qt: str, gen: str, config: str) -> str:
-    parts = [sdk, arch, qt or "qt5", gen or "default", config]
+    parts = [sdk, arch, qt or "default", gen or "default", config, f"official={official_parameters()}"]
     for path in required_build_files(src):
         parts.append(path.as_posix())
         parts.append(sha256_file(path))
@@ -234,7 +238,7 @@ def build_metadata() -> dict[str, str]:
     libs.mkdir(parents=True, exist_ok=True)
 
     artifact_bits = ["Telegram", arch, config]
-    artifact_bits.append(qt or "qt5")
+    artifact_bits.append(qt or "default")
     if gen:
         artifact_bits.append(gen.replace(" ", "-"))
 
@@ -309,7 +313,9 @@ def phase_prepare() -> None:
     require_dir(build_root, "BuildPath")
     required_build_files(src)
 
-    command: list[str | Path] = [src / "Telegram" / "build" / "prepare" / "win.bat", "skip-release", "silent"]
+    command: list[str | Path] = [src / "Telegram" / "build" / "prepare" / "win.bat"]
+    if not official_parameters():
+        command.extend(["skip-release", "silent"])
     if qt:
         command.append(qt)
     run_batch(command, cwd=build_root)
@@ -356,20 +362,21 @@ def phase_build() -> None:
     if qt:
         configure_args.append(qt)
     configure_args.extend(api_arguments())
-    configure_args.extend(
-        [
-            "-D",
-            f"CMAKE_CONFIGURATION_TYPES={config}",
-            "-D",
-            "CMAKE_COMPILE_WARNING_AS_ERROR=ON",
-            "-D",
-            "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=",
-            "-D",
-            "DESKTOP_APP_DISABLE_AUTOUPDATE=OFF",
-            "-D",
-            "DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF",
-        ]
-    )
+    if not official_parameters():
+        configure_args.extend(
+            [
+                "-D",
+                f"CMAKE_CONFIGURATION_TYPES={config}",
+                "-D",
+                "CMAKE_COMPILE_WARNING_AS_ERROR=ON",
+                "-D",
+                "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=",
+                "-D",
+                "DESKTOP_APP_DISABLE_AUTOUPDATE=OFF",
+                "-D",
+                "DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF",
+            ]
+        )
     configure_args.extend(extra_cmake_arguments())
 
     run_batch(configure_args, cwd=telegram_dir)
@@ -406,8 +413,9 @@ def phase_artifact() -> None:
         "commit": commit,
         "configuration": config,
         "architecture": architecture(),
-        "qt": metadata["TDESKTOP_RESOLVED_QT"] or "qt5",
+        "qt": metadata["TDESKTOP_RESOLVED_QT"] or "default",
         "generator": metadata["TDESKTOP_RESOLVED_GENERATOR"] or "default",
+        "official_parameters": official_parameters(),
         "outputs": file_hashes(required_outputs),
         "note": "Unsigned GitHub Actions build; byte identity with Telegram official releases is not guaranteed.",
     }
