@@ -199,6 +199,15 @@ def read_sdk_version(src: Path) -> str:
     return match.group(1)
 
 
+def read_msvc_toolset(src: Path) -> str:
+    doc = require_file(src / "docs" / "building-win.md", "Windows build documentation")
+    text = doc.read_text(encoding="utf-8")
+    match = re.search(r"-vcvars_ver=([0-9.]+)", text)
+    if not match:
+        fail(f"Could not read MSVC vcvars toolset from {doc}")
+    return match.group(1)
+
+
 def required_build_files(src: Path) -> list[Path]:
     return [
         require_file(src / "Telegram" / "build" / "prepare" / "prepare.py", "prepare.py"),
@@ -214,8 +223,8 @@ def official_parameters() -> bool:
     return env_bool("TDESKTOP_OFFICIAL_PARAMETERS", True)
 
 
-def cache_key(src: Path, sdk: str, arch: str, qt: str, gen: str, config: str) -> str:
-    parts = [sdk, arch, qt or "default", gen or "default", config, f"official={official_parameters()}"]
+def cache_key(src: Path, sdk: str, toolset: str, arch: str, qt: str, gen: str) -> str:
+    parts = [sdk, toolset, arch, qt or "default", gen or "default", f"official={official_parameters()}"]
     for path in required_build_files(src):
         parts.append(path.as_posix())
         parts.append(sha256_file(path))
@@ -230,6 +239,7 @@ def build_metadata() -> dict[str, str]:
     qt = qt_flavor()
     gen = generator()
     sdk = read_sdk_version(src)
+    toolset = read_msvc_toolset(src)
     required_build_files(src)
 
     third_party = build_root / "ThirdParty"
@@ -248,12 +258,13 @@ def build_metadata() -> dict[str, str]:
         "TDESKTOP_THIRD_PARTY_PATH": str(third_party),
         "LibrariesPath": str(libs),
         "SDK": sdk,
+        "MSVC_TOOLSET": toolset,
         "MSVC_ARCH": msvc_arch_arg(arch),
         "TDESKTOP_CONFIGURE_ARCH": configure_arch_arg(arch, gen),
         "TDESKTOP_RESOLVED_QT": qt,
         "TDESKTOP_RESOLVED_GENERATOR": gen,
         "TDESKTOP_ARTIFACT_NAME": "-".join(artifact_bits),
-        "TDESKTOP_CACHE_KEY": cache_key(src, sdk, arch, qt, gen, config),
+        "TDESKTOP_CACHE_KEY": cache_key(src, sdk, toolset, arch, qt, gen),
     }
 
 
