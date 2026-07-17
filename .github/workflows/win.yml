@@ -7,6 +7,10 @@ on:
         description: Telegram Desktop tag to compile, for example v7.0.1.
         required: true
         type: string
+      environment:
+        description: GitHub Environment containing API_ID and API_HASH secrets.
+        required: true
+        type: environment
       configuration:
         description: CMake configuration to build.
         required: true
@@ -18,10 +22,19 @@ on:
           - Debug
           - MinSizeRel
 
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-official-${{ inputs.tag }}-${{ inputs.configuration }}
+  cancel-in-progress: false
+
 jobs:
 
   windows:
     name: Windows
+    environment:
+      name: ${{ inputs.environment }}
     runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || ((github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/nightly') && 'depot-windows-latest-16' || 'windows-latest') }}
 
     strategy:
@@ -34,8 +47,8 @@ jobs:
       UPLOAD_ARTIFACT: "true"
       ONLY_CACHE: "false"
       PREPARE_PATH: "Telegram/build/prepare/prepare.py"
-      TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
-      TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+      API_ID: ${{ secrets.API_ID }}
+      API_HASH: ${{ secrets.API_HASH }}
 
     defaults:
       run:
@@ -60,6 +73,18 @@ jobs:
           submodules: recursive
           fetch-depth: 0
           path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
+
+      - name: Validate deployment API credentials.
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:API_ID)) {
+            throw "The selected environment does not provide the API_ID secret."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:API_HASH)) {
+            throw "The selected environment does not provide the API_HASH secret."
+          }
+          Write-Output "::add-mask::$env:API_ID"
+          Write-Output "::add-mask::$env:API_HASH"
 
       - name: First set up.
         shell: bash
@@ -179,11 +204,7 @@ jobs:
 
           echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
 
-          if [ -z "$TDESKTOP_API_ID" ] || [ -z "$TDESKTOP_API_HASH" ]; then
-            echo "TDESKTOP_API_ID and TDESKTOP_API_HASH secrets are required." >&2
-            exit 1
-          fi
-          API="-D TDESKTOP_API_ID=$TDESKTOP_API_ID -D TDESKTOP_API_HASH=$TDESKTOP_API_HASH"
+          API="-D TDESKTOP_API_ID=$API_ID -D TDESKTOP_API_HASH=$API_HASH"
           echo "TDESKTOP_BUILD_API=$API" >> $GITHUB_ENV
 
       - name: Free up some disk space.
@@ -199,7 +220,12 @@ jobs:
           %TDESKTOP_BUILD_GENERATOR% ^
           %TDESKTOP_BUILD_ARCH% ^
           ${{ matrix.qt }} ^
-          %TDESKTOP_BUILD_API%
+          %TDESKTOP_BUILD_API% ^
+          -D CMAKE_CONFIGURATION_TYPES=${{ inputs.configuration }} ^
+          -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
+          -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
+          -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+          -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF
 
           cmake --build ..\out --config ${{ inputs.configuration }} --parallel
 

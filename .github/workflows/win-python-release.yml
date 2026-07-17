@@ -1,4 +1,4 @@
-name: Windows Release Python Runner.
+name: Windows Release (manual, official parameters)
 
 on:
   workflow_dispatch:
@@ -7,6 +7,10 @@ on:
         description: Telegram Desktop tag to compile, for example v7.0.1.
         required: true
         type: string
+      environment:
+        description: GitHub Environment containing API_ID and API_HASH secrets.
+        required: true
+        type: environment
       architecture:
         description: Windows target architecture.
         required: true
@@ -23,62 +27,41 @@ on:
         type: choice
         options:
           - Release
-          - RelWithDebInfo
           - Debug
-          - MinSizeRel
       qt:
-        description: Qt dependency flavor. Default passes no Qt argument, matching docs/building-win.md.
+        description: Qt dependency flavor. Default matches the official documented build command.
         required: true
         default: default
         type: choice
         options:
           - default
           - qt6
-          - qt5
-      official_parameters:
-        description: Use official documentation style arguments: win.bat, configure.bat arch + API only.
-        required: true
-        default: true
-        type: boolean
       generator:
-        description: CMake generator. Default follows configure.bat / Visual Studio.
+        description: CMake generator. Default follows configure.bat and Visual Studio.
         required: true
         default: default
         type: choice
         options:
           - default
           - Ninja Multi-Config
-      use_test_api:
-        description: Use Telegram test API credentials instead of repository secrets.
-        required: true
-        default: false
-        type: boolean
-      only_cache:
-        description: Prepare and cache dependencies without compiling Telegram.exe.
-        required: true
-        default: false
-        type: boolean
       upload_artifact:
         description: Upload Telegram.exe and Updater.exe after a successful build.
         required: true
         default: true
         type: boolean
-      extra_cmake_args:
-        description: Extra CMake arguments passed to configure.bat.
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-release-python-${{ inputs.tag }}-${{ inputs.architecture }}-${{ inputs.configuration }}-${{ inputs.qt }}-${{ inputs.generator }}
+  group: windows-release-${{ inputs.tag }}-${{ inputs.architecture }}-${{ inputs.configuration }}-${{ inputs.qt }}-${{ inputs.generator }}
   cancel-in-progress: false
 
 jobs:
   windows-release:
     name: Windows ${{ inputs.architecture }} ${{ inputs.configuration }}
+    environment:
+      name: ${{ inputs.environment }}
     runs-on: ${{ inputs.architecture == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
     timeout-minutes: 720
 
@@ -87,53 +70,66 @@ jobs:
         shell: cmd
 
     env:
-      TBUILD: ${{ github.workspace }}\TBuild
-      TDESKTOP_SOURCE_DIR: ${{ github.workspace }}\TBuild\tdesktop
-      TDESKTOP_RUNNER_DIR: ${{ github.workspace }}\TBuild\runner
-      TDESKTOP_SOURCE_REF: ${{ startsWith(inputs.tag, 'refs/tags/') && inputs.tag || format('refs/tags/{0}', inputs.tag) }}
-      TDESKTOP_ARCHITECTURE: ${{ inputs.architecture }}
-      TDESKTOP_CONFIGURATION: ${{ inputs.configuration }}
-      TDESKTOP_QT_FLAVOR: ${{ inputs.qt }}
-      TDESKTOP_OFFICIAL_PARAMETERS: ${{ inputs.official_parameters }}
-      TDESKTOP_GENERATOR: ${{ inputs.generator }}
-      TDESKTOP_USE_TEST_API: ${{ inputs.use_test_api }}
-      TDESKTOP_ONLY_CACHE: ${{ inputs.only_cache }}
-      TDESKTOP_UPLOAD_ARTIFACT: ${{ inputs.upload_artifact }}
-      TDESKTOP_EXTRA_CMAKE_ARGS: ${{ inputs.extra_cmake_args }}
-      TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
-      TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+      UPLOAD_ARTIFACT: ${{ inputs.upload_artifact }}
+      ONLY_CACHE: "false"
+      PREPARE_PATH: Telegram/build/prepare/prepare.py
+      SOURCE_REF: ${{ startsWith(inputs.tag, 'refs/tags/') && inputs.tag || format('refs/tags/{0}', inputs.tag) }}
+      API_ID: ${{ secrets.API_ID }}
+      API_HASH: ${{ secrets.API_HASH }}
 
     steps:
-      - name: Prepare BuildPath.
+      - name: Prepare directories.
         run: |
-          if not exist "%TBUILD%" mkdir "%TBUILD%"
-          if not exist "%TBUILD%\Libraries" mkdir "%TBUILD%\Libraries"
-          if not exist "%TBUILD%\ThirdParty" mkdir "%TBUILD%\ThirdParty"
+          mkdir %userprofile%\TBuild\Libraries
+          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries${{ inputs.architecture == 'x64' && '\win64' || '' }}>>%GITHUB_ENV%
 
-      - name: Checkout build runner scripts.
-        uses: actions/checkout@v4
-        with:
-          path: TBuild/runner
+      - name: Get repository name.
+        shell: bash
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> "$GITHUB_ENV"
 
-      - name: Checkout Telegram Desktop source.
-        uses: actions/checkout@v4
+      - name: Clone.
+        uses: actions/checkout@v7
         with:
-          ref: ${{ env.TDESKTOP_SOURCE_REF }}
+          ref: ${{ env.SOURCE_REF }}
           submodules: recursive
           fetch-depth: 0
-          path: TBuild/tdesktop
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
 
-      - name: Setup Python.
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-
-      - name: Compute build environment.
+      - name: Validate deployment API credentials.
+        shell: pwsh
         run: |
-          cd /d "%TDESKTOP_RUNNER_DIR%"
-          python tools\build_windows.py github-env
+          if ([string]::IsNullOrWhiteSpace($env:API_ID)) {
+            throw "The selected environment does not provide the API_ID secret."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:API_HASH)) {
+            throw "The selected environment does not provide the API_HASH secret."
+          }
+          Write-Output "::add-mask::$env:API_ID"
+          Write-Output "::add-mask::$env:API_HASH"
 
-      - name: Install VS 2026 Build Tools for ARM64.
+      - name: First set up.
+        shell: bash
+        run: |
+          DOCPATH="$TBUILD/$REPO_NAME/docs/building-win.md"
+          SDK="$(grep "SDK version" "$DOCPATH" | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
+          echo "SDK=$SDK" >> "$GITHUB_ENV"
+
+          sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
+
+          echo "$(sha256sum "$TBUILD/$REPO_NAME/$PREPARE_PATH" | awk '{ print $1 }')" >> CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          echo "${{ inputs.architecture }}" >> CACHE_KEY.txt
+          echo "${{ inputs.configuration }}" >> CACHE_KEY.txt
+          echo "${{ inputs.qt }}" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> "$GITHUB_ENV"
+
+          echo "Configure git for dependency cherry-picks."
+          git config --global user.email "you@example.com"
+          git config --global user.name "Sample"
+
+      - name: Install VS 2026 Build Tools.
         if: inputs.architecture == 'arm64'
         shell: pwsh
         run: |
@@ -146,19 +142,19 @@ jobs:
           Remove-Item vs_buildtools.exe -Force
           if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { exit $p.ExitCode }
 
-      - name: Native Tools Command Prompt.
+      - uses: Eden-CI/msvc-dev-cmd@master
+        name: Native Tools Command Prompt.
         if: inputs.architecture != 'arm64'
-        uses: Eden-CI/msvc-dev-cmd@master
         with:
-          arch: ${{ env.MSVC_ARCH }}
+          arch: ${{ inputs.architecture == 'x86' && 'x64_x86' || 'x64' }}
           sdk: ${{ env.SDK }}
           toolset: 14.44
 
-      - name: Native Tools Command Prompt ARM64.
+      - uses: Eden-CI/msvc-dev-cmd@master
+        name: Native Tools Command Prompt ARM64.
         if: inputs.architecture == 'arm64'
-        uses: Eden-CI/msvc-dev-cmd@master
         with:
-          arch: ${{ env.MSVC_ARCH }}
+          arch: arm64
           sdk: ${{ env.SDK }}
 
       - name: NuGet sources.
@@ -166,27 +162,17 @@ jobs:
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
 
-      - name: Patch CMake MSVC debug flags.
-        run: |
-          cd /d "%TDESKTOP_RUNNER_DIR%"
-          python tools\build_windows.py patch-cmake-msvc
-
-      - name: Build tool diagnostics.
-        run: |
-          cd /d "%TDESKTOP_RUNNER_DIR%"
-          python tools\build_windows.py diagnose
-
       - name: ThirdParty cache.
         id: cache-third-party
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
-          path: ${{ env.TDESKTOP_THIRD_PARTY_PATH }}
-          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ runner.arch }}-third-party-
 
       - name: Libraries cache.
         id: cache-libs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ env.LibrariesPath }}\*
@@ -194,59 +180,87 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ inputs.architecture }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ inputs.architecture }}-tdesktop-libs-
+          key: ${{ runner.OS }}-${{ inputs.architecture }}-libs-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ inputs.architecture }}-libs-
 
       - name: Qt cache.
         id: cache-qt
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ inputs.architecture }}-${{ inputs.qt }}-tdesktop-qt-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ inputs.architecture }}-${{ inputs.qt }}-tdesktop-qt-
+          key: ${{ runner.OS }}-${{ inputs.architecture }}-${{ inputs.qt }}-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ inputs.architecture }}-${{ inputs.qt }}-
 
-      - name: Prepare libraries.
+      - name: Libraries.
         run: |
-          cd /d "%TDESKTOP_RUNNER_DIR%"
-          python tools\build_windows.py prepare
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat ${{ inputs.configuration == 'Debug' && 'skip-release silent' || 'silent' }} ${{ inputs.qt == 'qt6' && 'qt6' || '' }}
 
-      - name: Free up disk space after dependency preparation.
-        shell: pwsh
+      - name: Read build parameters.
+        shell: bash
         run: |
-          $path = $env:LibrariesPath
-          if (-not (Test-Path $path)) { return }
-          Get-ChildItem -LiteralPath $path -Recurse -Force -File |
-            Where-Object {
-              $_.Extension -notin '.lib', '.a', '.exe', '.h', '.hpp', '.inc', '.cmake' -and
-              $_.FullName -notmatch '\\include\\' -and
-              $_.FullName -notmatch '\\objects-[^\\]+\\' -and
-              $_.FullName -notmatch '\\cache_keys\\' -and
-              $_.FullName -notmatch '\\patches\\'
-            } |
-            Remove-Item -Force
-          Get-ChildItem -LiteralPath $path -Recurse -Force -Directory |
-            Sort-Object FullName -Descending |
-            Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1) } |
-            Remove-Item -Force
+          ARTIFACT_NAME="Telegram-${{ inputs.architecture }}-${{ inputs.configuration }}"
+          ARCH="${{ inputs.architecture }}"
+          QT="${{ inputs.qt == 'qt6' && 'qt6' || '' }}"
+          GENERATOR=""
+
+          case "$ARCH" in
+            x86) ARCH="x86";;
+            x64) ARCH="x64";;
+            arm64) ARCH="arm";;
+          esac
+
+          if [ "${{ inputs.generator }}" = "Ninja Multi-Config" ]; then
+            GENERATOR='-G "Ninja Multi-Config"'
+            ARCH=""
+            ARTIFACT_NAME="$ARTIFACT_NAME-Ninja-Multi-Config"
+          fi
+
+          if [ -n "$QT" ]; then
+            ARTIFACT_NAME="$ARTIFACT_NAME-$QT"
+          fi
+
+          echo "TDESKTOP_BUILD_GENERATOR=$GENERATOR" >> "$GITHUB_ENV"
+          echo "TDESKTOP_BUILD_ARCH=$ARCH" >> "$GITHUB_ENV"
+          echo "TDESKTOP_BUILD_QT=$QT" >> "$GITHUB_ENV"
+          echo "TDESKTOP_BUILD_API=-D TDESKTOP_API_ID=$API_ID -D TDESKTOP_API_HASH=$API_HASH" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> "$GITHUB_ENV"
+
+      - name: Free up some disk space.
+        shell: bash
+        run: find "$LibrariesPath" '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' ')' -type f ')' -o -empty ')' -delete
 
       - name: Telegram Desktop build.
-        if: env.TDESKTOP_ONLY_CACHE == 'false'
+        if: env.ONLY_CACHE == 'false'
         run: |
-          cd /d "%TDESKTOP_RUNNER_DIR%"
-          python tools\build_windows.py build
+          cd %TBUILD%\%REPO_NAME%\Telegram
 
-      - name: Stage artifact.
-        if: env.TDESKTOP_ONLY_CACHE == 'false' && env.TDESKTOP_UPLOAD_ARTIFACT == 'true'
+          call configure.bat ^
+          %TDESKTOP_BUILD_GENERATOR% ^
+          %TDESKTOP_BUILD_ARCH% ^
+          %TDESKTOP_BUILD_QT% ^
+          %TDESKTOP_BUILD_API% ^
+          -D CMAKE_CONFIGURATION_TYPES=${{ inputs.configuration }} ^
+          -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
+          -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
+          -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+          -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF
+
+          cmake --build ..\out --config ${{ inputs.configuration }} --parallel
+
+      - name: Move artifact.
+        if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-          cd /d "%TDESKTOP_RUNNER_DIR%"
-          python tools\build_windows.py artifact
+          set OUT=%TBUILD%\%REPO_NAME%\out\${{ inputs.configuration }}
+          mkdir artifact
+          move %OUT%\Telegram.exe artifact\
+          move %OUT%\Updater.exe artifact\
 
-      - name: Upload artifact.
-        if: env.TDESKTOP_ONLY_CACHE == 'false' && env.TDESKTOP_UPLOAD_ARTIFACT == 'true'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
+        name: Upload artifact.
+        if: env.UPLOAD_ARTIFACT == 'true'
         with:
-          name: ${{ env.TDESKTOP_ARTIFACT_NAME }}
-          path: ${{ env.TDESKTOP_ARTIFACT_DIR }}
+          name: ${{ env.ARTIFACT_NAME }}
+          path: artifact\
           if-no-files-found: error
