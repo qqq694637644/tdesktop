@@ -1,0 +1,232 @@
+name: Windows Release Python Runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: Windows target architecture.
+        required: true
+        default: x64
+        type: choice
+        options:
+          - x64
+          - x86
+          - arm64
+      configuration:
+        description: CMake configuration to build.
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - RelWithDebInfo
+          - Debug
+          - MinSizeRel
+      qt:
+        description: Qt dependency flavor.
+        required: true
+        default: qt6
+        type: choice
+        options:
+          - qt6
+          - qt5
+      generator:
+        description: CMake generator. Default follows configure.bat / Visual Studio.
+        required: true
+        default: default
+        type: choice
+        options:
+          - default
+          - Ninja Multi-Config
+      use_test_api:
+        description: Use Telegram test API credentials instead of repository secrets.
+        required: true
+        default: false
+        type: boolean
+      only_cache:
+        description: Prepare and cache dependencies without compiling Telegram.exe.
+        required: true
+        default: false
+        type: boolean
+      upload_artifact:
+        description: Upload Telegram.exe and Updater.exe after a successful build.
+        required: true
+        default: true
+        type: boolean
+      extra_cmake_args:
+        description: Extra CMake arguments passed to configure.bat.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-python-${{ github.ref }}-${{ inputs.architecture }}-${{ inputs.configuration }}-${{ inputs.qt }}-${{ inputs.generator }}
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    name: Windows ${{ inputs.architecture }} ${{ inputs.configuration }}
+    runs-on: ${{ inputs.architecture == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
+    timeout-minutes: 720
+
+    defaults:
+      run:
+        shell: cmd
+
+    env:
+      TBUILD: ${{ github.workspace }}\TBuild
+      TDESKTOP_SOURCE_DIR: ${{ github.workspace }}\TBuild\tdesktop
+      TDESKTOP_ARCHITECTURE: ${{ inputs.architecture }}
+      TDESKTOP_CONFIGURATION: ${{ inputs.configuration }}
+      TDESKTOP_QT_FLAVOR: ${{ inputs.qt }}
+      TDESKTOP_GENERATOR: ${{ inputs.generator }}
+      TDESKTOP_USE_TEST_API: ${{ inputs.use_test_api }}
+      TDESKTOP_ONLY_CACHE: ${{ inputs.only_cache }}
+      TDESKTOP_UPLOAD_ARTIFACT: ${{ inputs.upload_artifact }}
+      TDESKTOP_EXTRA_CMAKE_ARGS: ${{ inputs.extra_cmake_args }}
+      TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
+      TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+
+    steps:
+      - name: Prepare BuildPath.
+        run: |
+          if not exist "%TBUILD%" mkdir "%TBUILD%"
+          if not exist "%TBUILD%\Libraries" mkdir "%TBUILD%\Libraries"
+          if not exist "%TBUILD%\ThirdParty" mkdir "%TBUILD%\ThirdParty"
+
+      - name: Clone.
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: TBuild/tdesktop
+
+      - name: Setup Python.
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Compute build environment.
+        run: |
+          cd /d "%TDESKTOP_SOURCE_DIR%"
+          python tools\build_windows.py github-env
+
+      - name: Install VS 2026 Build Tools for ARM64.
+        if: inputs.architecture == 'arm64'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://aka.ms/vs/18/stable/vs_buildtools.exe -OutFile vs_buildtools.exe
+          $p = Start-Process -FilePath .\vs_buildtools.exe -Wait -PassThru -ArgumentList `
+            '--quiet','--wait','--norestart','--nocache', `
+            '--add','Microsoft.VisualStudio.Workload.VCTools', `
+            '--add','Microsoft.VisualStudio.Component.VC.Tools.ARM64', `
+            '--add','Microsoft.VisualStudio.Component.VC.ATL.ARM64'
+          Remove-Item vs_buildtools.exe -Force
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { exit $p.ExitCode }
+
+      - name: Native Tools Command Prompt.
+        if: inputs.architecture != 'arm64'
+        uses: Eden-CI/msvc-dev-cmd@master
+        with:
+          arch: ${{ env.MSVC_ARCH }}
+          sdk: ${{ env.SDK }}
+          toolset: 14.44
+
+      - name: Native Tools Command Prompt ARM64.
+        if: inputs.architecture == 'arm64'
+        uses: Eden-CI/msvc-dev-cmd@master
+        with:
+          arch: ${{ env.MSVC_ARCH }}
+          sdk: ${{ env.SDK }}
+
+      - name: NuGet sources.
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+
+      - name: Patch CMake MSVC debug flags.
+        run: |
+          cd /d "%TDESKTOP_SOURCE_DIR%"
+          python tools\build_windows.py patch-cmake-msvc
+
+      - name: Build tool diagnostics.
+        run: |
+          cd /d "%TDESKTOP_SOURCE_DIR%"
+          python tools\build_windows.py diagnose
+
+      - name: ThirdParty cache.
+        id: cache-third-party
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TDESKTOP_THIRD_PARTY_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_KEY }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-
+
+      - name: Libraries cache.
+        id: cache-libs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ inputs.architecture }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_KEY }}
+          restore-keys: ${{ runner.os }}-${{ inputs.architecture }}-tdesktop-libs-
+
+      - name: Qt cache.
+        id: cache-qt
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ inputs.architecture }}-${{ inputs.qt }}-tdesktop-qt-${{ env.TDESKTOP_CACHE_KEY }}
+          restore-keys: ${{ runner.os }}-${{ inputs.architecture }}-${{ inputs.qt }}-tdesktop-qt-
+
+      - name: Prepare libraries.
+        run: |
+          cd /d "%TDESKTOP_SOURCE_DIR%"
+          python tools\build_windows.py prepare
+
+      - name: Free up disk space after dependency preparation.
+        shell: pwsh
+        run: |
+          $path = $env:LibrariesPath
+          if (-not (Test-Path $path)) { return }
+          Get-ChildItem -LiteralPath $path -Recurse -Force -File |
+            Where-Object {
+              $_.Extension -notin '.lib', '.a', '.exe', '.h', '.hpp', '.inc', '.cmake' -and
+              $_.FullName -notmatch '\\include\\' -and
+              $_.FullName -notmatch '\\objects-[^\\]+\\' -and
+              $_.FullName -notmatch '\\cache_keys\\' -and
+              $_.FullName -notmatch '\\patches\\'
+            } |
+            Remove-Item -Force
+          Get-ChildItem -LiteralPath $path -Recurse -Force -Directory |
+            Sort-Object FullName -Descending |
+            Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1) } |
+            Remove-Item -Force
+
+      - name: Telegram Desktop build.
+        if: env.TDESKTOP_ONLY_CACHE == 'false'
+        run: |
+          cd /d "%TDESKTOP_SOURCE_DIR%"
+          python tools\build_windows.py build
+
+      - name: Stage artifact.
+        if: env.TDESKTOP_ONLY_CACHE == 'false' && env.TDESKTOP_UPLOAD_ARTIFACT == 'true'
+        run: |
+          cd /d "%TDESKTOP_SOURCE_DIR%"
+          python tools\build_windows.py artifact
+
+      - name: Upload artifact.
+        if: env.TDESKTOP_ONLY_CACHE == 'false' && env.TDESKTOP_UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TDESKTOP_ARTIFACT_NAME }}
+          path: ${{ env.TDESKTOP_ARTIFACT_DIR }}
+          if-no-files-found: error
