@@ -28,13 +28,19 @@ on:
           - Debug
           - MinSizeRel
       qt:
-        description: Qt dependency flavor.
+        description: Qt dependency flavor. Default passes no Qt argument, matching docs/building-win.md.
         required: true
-        default: qt6
+        default: default
         type: choice
         options:
+          - default
           - qt6
           - qt5
+      official_parameters:
+        description: Use official documentation style arguments: win.bat, configure.bat arch + API only.
+        required: true
+        default: true
+        type: boolean
       generator:
         description: CMake generator. Default follows configure.bat / Visual Studio.
         required: true
@@ -89,6 +95,7 @@ jobs:
       TDESKTOP_ARCHITECTURE: ${{ inputs.architecture }}
       TDESKTOP_CONFIGURATION: ${{ inputs.configuration }}
       TDESKTOP_QT_FLAVOR: ${{ inputs.qt }}
+      TDESKTOP_OFFICIAL_PARAMETERS: ${{ inputs.official_parameters }}
       TDESKTOP_GENERATOR: ${{ inputs.generator }}
       TDESKTOP_USE_TEST_API: ${{ inputs.use_test_api }}
       TDESKTOP_ONLY_CACHE: ${{ inputs.only_cache }}
