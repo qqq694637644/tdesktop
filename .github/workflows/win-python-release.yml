@@ -3,6 +3,11 @@ name: Windows Release Python Runner.
 on:
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: Source ref to compile, for example v7.0.1. Leave empty to compile the selected workflow ref.
+        required: false
+        default: ""
+        type: string
       architecture:
         description: Windows target architecture.
         required: true
@@ -63,7 +68,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-python-${{ github.ref }}-${{ inputs.architecture }}-${{ inputs.configuration }}-${{ inputs.qt }}-${{ inputs.generator }}
+  group: windows-release-python-${{ inputs.source_ref || github.ref }}-${{ inputs.architecture }}-${{ inputs.configuration }}-${{ inputs.qt }}-${{ inputs.generator }}
   cancel-in-progress: false
 
 jobs:
@@ -79,6 +84,8 @@ jobs:
     env:
       TBUILD: ${{ github.workspace }}\TBuild
       TDESKTOP_SOURCE_DIR: ${{ github.workspace }}\TBuild\tdesktop
+      TDESKTOP_RUNNER_DIR: ${{ github.workspace }}\TBuild\runner
+      TDESKTOP_SOURCE_REF: ${{ inputs.source_ref || github.ref }}
       TDESKTOP_ARCHITECTURE: ${{ inputs.architecture }}
       TDESKTOP_CONFIGURATION: ${{ inputs.configuration }}
       TDESKTOP_QT_FLAVOR: ${{ inputs.qt }}
@@ -97,10 +104,17 @@ jobs:
           if not exist "%TBUILD%\Libraries" mkdir "%TBUILD%\Libraries"
           if not exist "%TBUILD%\ThirdParty" mkdir "%TBUILD%\ThirdParty"
 
-      - name: Clone.
+      - name: Checkout build runner scripts.
         uses: actions/checkout@v4
         with:
+          path: TBuild/runner
+
+      - name: Checkout Telegram Desktop source.
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TDESKTOP_SOURCE_REF }}
           submodules: recursive
+          fetch-depth: 0
           path: TBuild/tdesktop
 
       - name: Setup Python.
@@ -110,7 +124,7 @@ jobs:
 
       - name: Compute build environment.
         run: |
-          cd /d "%TDESKTOP_SOURCE_DIR%"
+          cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py github-env
 
       - name: Install VS 2026 Build Tools for ARM64.
@@ -148,12 +162,12 @@ jobs:
 
       - name: Patch CMake MSVC debug flags.
         run: |
-          cd /d "%TDESKTOP_SOURCE_DIR%"
+          cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py patch-cmake-msvc
 
       - name: Build tool diagnostics.
         run: |
-          cd /d "%TDESKTOP_SOURCE_DIR%"
+          cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py diagnose
 
       - name: ThirdParty cache.
@@ -189,7 +203,7 @@ jobs:
 
       - name: Prepare libraries.
         run: |
-          cd /d "%TDESKTOP_SOURCE_DIR%"
+          cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py prepare
 
       - name: Free up disk space after dependency preparation.
@@ -214,13 +228,13 @@ jobs:
       - name: Telegram Desktop build.
         if: env.TDESKTOP_ONLY_CACHE == 'false'
         run: |
-          cd /d "%TDESKTOP_SOURCE_DIR%"
+          cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py build
 
       - name: Stage artifact.
         if: env.TDESKTOP_ONLY_CACHE == 'false' && env.TDESKTOP_UPLOAD_ARTIFACT == 'true'
         run: |
-          cd /d "%TDESKTOP_SOURCE_DIR%"
+          cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py artifact
 
       - name: Upload artifact.
