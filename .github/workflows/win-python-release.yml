@@ -163,6 +163,20 @@ jobs:
           key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_KEY }}
           restore-keys: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-
 
+      - name: Partial Libraries cache.
+        id: cache-libs-partial
+        if: steps.cache-libs.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-
+
       - name: Qt cache.
         id: cache-qt
         uses: actions/cache@v4
@@ -174,11 +188,67 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-
 
       - name: Prepare libraries.
+        id: prepare-libraries
+        continue-on-error: true
         run: |
           cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py prepare
 
+      - name: Diagnose failed dependency preparation.
+        if: steps.prepare-libraries.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host 'Prepare libraries failed. Printing focused dependency diagnostics.'
+
+          $libraries = $env:LibrariesPath
+          Write-Host "LibrariesPath=$libraries"
+          if (-not (Test-Path -LiteralPath $libraries)) {
+            Write-Host 'LibrariesPath does not exist.'
+            return
+          }
+
+          $checks = @(
+            'win64\libvpx',
+            'win64\libvpx\vpxmt.lib',
+            'win64\cache_keys\libvpx',
+            'win64\cache_keys\libvpx-*',
+            'cache_keys\libvpx',
+            'cache_keys\libvpx-*'
+          )
+
+          foreach ($relative in $checks) {
+            $path = Join-Path $libraries $relative
+            $items = Get-ChildItem -Path $path -Force -ErrorAction SilentlyContinue
+            if ($items) {
+              Write-Host "FOUND: $relative"
+              $items | Select-Object -First 20 FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 240 | Write-Host
+            } elseif (Test-Path -LiteralPath $path) {
+              $item = Get-Item -LiteralPath $path -Force
+              Write-Host "FOUND: $relative -> $($item.FullName)"
+            } else {
+              Write-Host "MISSING: $relative"
+            }
+          }
+
+          Write-Host 'Recently modified libvpx diagnostic files:'
+          Get-ChildItem -LiteralPath $libraries -Recurse -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'libvpx' -and $_.Extension -in '.log', '.err', '.out', '.txt', '.mk', '.tlog' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 20 FullName, Length, LastWriteTime |
+            Format-Table -AutoSize | Out-String -Width 240 | Write-Host
+
+          Get-ChildItem -LiteralPath $libraries -Recurse -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'libvpx' -and $_.Extension -in '.log', '.err', '.out', '.txt' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 5 |
+            ForEach-Object {
+              Write-Host "---- tail: $($_.FullName) ----"
+              Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
+            }
+
       - name: Free up disk space after dependency preparation.
+        if: always() && steps.prepare-libraries.outcome != 'skipped'
         shell: pwsh
         run: |
           $path = $env:LibrariesPath
@@ -196,6 +266,22 @@ jobs:
             Sort-Object FullName -Descending |
             Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1) } |
             Remove-Item -Force
+
+      - name: Save partial Libraries cache.
+        if: steps.prepare-libraries.outcome == 'failure'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}
+
+      - name: Stop after failed dependency preparation.
+        if: steps.prepare-libraries.outcome == 'failure'
+        run: exit /b 1
 
       - name: Telegram Desktop build.
         run: |
