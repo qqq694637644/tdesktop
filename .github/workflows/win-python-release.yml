@@ -54,7 +54,10 @@ jobs:
       TDESKTOP_USE_TEST_API: false
       TDESKTOP_ONLY_CACHE: false
       TDESKTOP_UPLOAD_ARTIFACT: true
-      TDESKTOP_EXTRA_CMAKE_ARGS: ""
+      # The hosted runner currently ships a newer CMake than this tag was authored
+      # against. Keep Telegram's configure.bat flow, but do not treat new CMake
+      # policy diagnostics from bundled third-party projects as fatal errors.
+      TDESKTOP_EXTRA_CMAKE_ARGS: "-Wno-error=policy"
       TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID || secrets.API_ID }}
       TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH || secrets.API_HASH }}
 
