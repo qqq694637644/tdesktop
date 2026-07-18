@@ -110,9 +110,15 @@ jobs:
           if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe was not found.' }
           if (-not (Test-Path -LiteralPath $installer)) { throw 'vs_installer.exe was not found.' }
 
-          $installPath = (& $vswhere -latest -version '[18.0,19.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) | Select-Object -First 1
+          $vsInstance = (& $vswhere -latest -version '[18.0,19.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json) | Select-Object -First 1
+          if (-not $vsInstance) { throw 'Visual Studio 2026 / VS 18 with x64 C++ tools was not found.' }
+
+          $installPath = $vsInstance.installationPath
+          $channelId = $vsInstance.channelId
           if (-not $installPath) { throw 'Visual Studio 2026 / VS 18 with x64 C++ tools was not found.' }
+          if (-not $channelId) { throw 'Visual Studio 2026 channelId was not reported by vswhere.' }
           Write-Host "Visual Studio 2026: $installPath"
+          Write-Host "Visual Studio channelId: $channelId"
 
           function Get-VcToolsPath {
             $toolsRoot = Join-Path $installPath 'VC\Tools\MSVC'
@@ -141,7 +147,7 @@ jobs:
             'Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL',
             'Microsoft.VisualStudio.Component.VC.14.44.17.14.MFC'
           )
-          $args = @('modify', '--installPath', $installPath, '--quiet', '--wait', '--norestart', '--nocache')
+          $args = @('modify', '--installPath', $installPath, '--channelId', $channelId, '--quiet', '--wait', '--norestart', '--nocache')
           foreach ($component in $components) { $args += @('--add', $component) }
 
           $process = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
