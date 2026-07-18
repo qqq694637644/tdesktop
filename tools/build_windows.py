@@ -366,6 +366,31 @@ def extra_cmake_arguments() -> list[str]:
     return shlex.split(extra, posix=False)
 
 
+def tag_input() -> str:
+    return env_value("TDESKTOP_TAG_INPUT")
+
+
+def patch_v701_cmake_helpers(src: Path) -> None:
+    if tag_input() != "v7.0.1":
+        return
+
+    run_cmake = require_file(src / "cmake" / "run_cmake.py", "cmake helper run_cmake.py")
+    text = run_cmake.read_text(encoding="utf-8")
+    old = "cmake.extend(['-Werror=dev', '-Werror=deprecated', '--warn-uninitialized', '..' if not buildType else '../..'])"
+    new = "cmake.extend(['--warn-uninitialized', '..' if not buildType else '../..'])"
+    if old not in text:
+        if "-Werror=dev" not in text and "-Werror=deprecated" not in text:
+            log("v7.0.1 CMake helper warning-as-error patch is already applied.")
+            return
+        fail(
+            "Could not apply the v7.0.1 CMake helper warning-as-error patch. "
+            f"Unexpected contents in {run_cmake}."
+        )
+
+    run_cmake.write_text(text.replace(old, new, 1), encoding="utf-8")
+    log(f"patched v7.0.1 CMake helper warning-as-error flags in {run_cmake}")
+
+
 def phase_build() -> None:
     src = source_dir()
     config = configuration()
@@ -374,6 +399,7 @@ def phase_build() -> None:
     gen = env_value("TDESKTOP_RESOLVED_GENERATOR") or generator()
     telegram_dir = require_dir(src / "Telegram", "Telegram source directory")
     configure_bat = require_file(telegram_dir / "configure.bat", "configure.bat")
+    patch_v701_cmake_helpers(src)
 
     configure_args: list[str | Path] = [configure_bat]
     if gen:
