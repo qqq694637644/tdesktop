@@ -50,6 +50,7 @@ jobs:
       TDESKTOP_CONFIGURATION: ${{ inputs.configuration }}
       TDESKTOP_QT_FLAVOR: default
       TDESKTOP_OFFICIAL_PARAMETERS: true
+      TDESKTOP_CACHE_SCHEMA: v2
       TDESKTOP_GENERATOR: default
       TDESKTOP_USE_TEST_API: false
       TDESKTOP_ONLY_CACHE: false
@@ -252,8 +253,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.TDESKTOP_THIRD_PARTY_PATH }}
-          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-
+          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
 
       - name: Libraries cache.
         id: cache-libs
@@ -265,8 +265,7 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
 
       - name: Partial Libraries cache.
         id: cache-libs-partial
@@ -279,10 +278,10 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-
-            ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-
+            ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-
+            ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-
 
       - name: Qt cache.
         id: cache-qt
@@ -291,8 +290,7 @@ jobs:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
 
       - name: Prepare libraries.
         id: prepare-libraries
@@ -360,6 +358,46 @@ jobs:
               Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
             }
 
+      - name: Save ThirdParty cache.
+        if: steps.prepare-libraries.outcome == 'success' && steps.cache-third-party.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.TDESKTOP_THIRD_PARTY_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
+
+      - name: Save Libraries cache.
+        if: steps.prepare-libraries.outcome == 'success' && steps.cache-libs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
+
+      - name: Save Qt cache.
+        if: steps.prepare-libraries.outcome == 'success' && steps.cache-qt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
+
+      - name: Save partial Libraries cache.
+        if: steps.prepare-libraries.outcome == 'failure'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Free up disk space after dependency preparation.
         if: always() && steps.prepare-libraries.outcome != 'skipped'
         shell: pwsh
@@ -379,46 +417,6 @@ jobs:
             Sort-Object FullName -Descending |
             Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1) } |
             Remove-Item -Force
-
-      - name: Save ThirdParty cache.
-        if: steps.prepare-libraries.outcome == 'success' && steps.cache-third-party.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.TDESKTOP_THIRD_PARTY_PATH }}
-          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_KEY }}
-
-      - name: Save Libraries cache.
-        if: steps.prepare-libraries.outcome == 'success' && steps.cache-libs.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ${{ env.LibrariesPath }}\*
-            !${{ env.LibrariesPath }}\cache_keys
-            !${{ env.LibrariesPath }}\[qQ]t[_-]*
-            ${{ env.LibrariesPath }}\cache_keys\*
-            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_KEY }}
-
-      - name: Save Qt cache.
-        if: steps.prepare-libraries.outcome == 'success' && steps.cache-qt.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ${{ env.LibrariesPath }}\[qQ]t[_-]*
-            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-${{ env.TDESKTOP_CACHE_KEY }}
-
-      - name: Save partial Libraries cache.
-        if: steps.prepare-libraries.outcome == 'failure'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ${{ env.LibrariesPath }}\*
-            !${{ env.LibrariesPath }}\cache_keys
-            !${{ env.LibrariesPath }}\[qQ]t[_-]*
-            ${{ env.LibrariesPath }}\cache_keys\*
-            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Stop after failed dependency preparation.
         if: steps.prepare-libraries.outcome == 'failure'
