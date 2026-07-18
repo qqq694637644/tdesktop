@@ -224,7 +224,15 @@ def official_parameters() -> bool:
 
 
 def cache_key(src: Path, sdk: str, toolset: str, arch: str, qt: str, gen: str) -> str:
-    parts = [sdk, toolset, arch, qt or "default", gen or "default", f"official={official_parameters()}"]
+    parts = [
+        sdk,
+        toolset,
+        arch,
+        qt or "default",
+        gen or "default",
+        f"official={official_parameters()}",
+        f"extra_cmake_args={env_value('TDESKTOP_EXTRA_CMAKE_ARGS')}",
+    ]
     for path in required_build_files(src):
         parts.append(path.as_posix())
         parts.append(sha256_file(path))

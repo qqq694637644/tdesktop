@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Telegram Desktop tag to compile, for example v7.0.1.
+        description: Plain Telegram Desktop tag to compile, for example v7.0.1. Do not include refs/tags/.
         required: true
         type: string
       environment:
@@ -45,7 +45,8 @@ jobs:
       TBUILD: ${{ github.workspace }}\TBuild
       TDESKTOP_SOURCE_DIR: ${{ github.workspace }}\TBuild\tdesktop
       TDESKTOP_RUNNER_DIR: ${{ github.workspace }}\TBuild\runner
-      TDESKTOP_SOURCE_REF: ${{ startsWith(inputs.tag, 'refs/tags/') && inputs.tag || format('refs/tags/{0}', inputs.tag) }}
+      TDESKTOP_TAG_INPUT: ${{ inputs.tag }}
+      TDESKTOP_SOURCE_REF: refs/tags/${{ inputs.tag }}
       TDESKTOP_ARCHITECTURE: x64
       TDESKTOP_CONFIGURATION: ${{ inputs.configuration }}
       TDESKTOP_QT_FLAVOR: default
@@ -55,10 +56,10 @@ jobs:
       TDESKTOP_USE_TEST_API: false
       TDESKTOP_ONLY_CACHE: false
       TDESKTOP_UPLOAD_ARTIFACT: true
-      # The hosted runner currently ships a newer CMake than this tag was authored
-      # against. Keep Telegram's configure.bat flow, but do not treat new CMake
-      # policy diagnostics from bundled third-party projects as fatal errors.
-      TDESKTOP_EXTRA_CMAKE_ARGS: "-Wno-error=policy"
+      # v7.0.1's bundled cmark-gfm trips newer hosted-runner CMake policy diagnostics.
+      # Keep this compatibility flag scoped to that confirmed tag instead of applying
+      # it to every future or older release tag.
+      TDESKTOP_EXTRA_CMAKE_ARGS: ${{ inputs.tag == 'v7.0.1' && '-Wno-error=policy' || '' }}
       TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID || secrets.API_ID }}
       TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH || secrets.API_HASH }}
 
@@ -73,6 +74,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: TBuild/runner
+
+      - name: Validate tag input.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TDESKTOP_TAG_INPUT -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Tag input must be a plain Telegram Desktop release tag like 'v7.0.1'. Do not include refs/tags/."
+          }
 
       - name: Checkout Telegram Desktop source.
         uses: actions/checkout@v4
@@ -103,6 +112,17 @@ jobs:
         run: |
           cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py github-env
+
+      - name: Validate supported hosted toolchain.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:MSVC_TOOLSET -ne '14.44') {
+            throw "This hosted workflow currently supports tags whose Windows docs request MSVC toolset 14.44. Parsed '$env:MSVC_TOOLSET' from $env:TDESKTOP_TAG_INPUT."
+          }
+          if ($env:SDK -ne '10.0.26100.0') {
+            throw "This hosted workflow currently supports tags whose Windows docs request SDK 10.0.26100.0. Parsed '$env:SDK' from $env:TDESKTOP_TAG_INPUT."
+          }
 
       - name: Ensure VS2026 ATL/MFC components.
         shell: pwsh
@@ -234,9 +254,24 @@ jobs:
           }
 
       - name: NuGet sources.
+        shell: pwsh
         run: |
-          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
-          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+          $ErrorActionPreference = 'Stop'
+          & nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'Microsoft Visual Studio Offline Packages source was not disabled; continuing because this source may be absent.'
+          }
+
+          $nugetOrg = 'https://api.nuget.org/v3/index.json'
+          $sourcesOutput = & nuget sources List -Format Detailed
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to list NuGet sources.' }
+          $sources = $sourcesOutput | Out-String
+          if ($sources -match [regex]::Escape($nugetOrg)) {
+            Write-Host "NuGet source already configured: $nugetOrg"
+          } else {
+            & nuget sources Add -Name 'nuget.org' -Source $nugetOrg
+            if ($LASTEXITCODE -ne 0) { throw "Failed to add NuGet source: $nugetOrg" }
+          }
 
       - name: Patch CMake MSVC debug flags.
         run: |
@@ -303,61 +338,6 @@ jobs:
           cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py prepare
 
-      - name: Diagnose failed dependency preparation.
-        if: steps.prepare-libraries.outcome == 'failure'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          Write-Host 'Prepare libraries failed. Printing focused dependency diagnostics.'
-
-          $libraries = $env:LibrariesPath
-          Write-Host "LibrariesPath=$libraries"
-          if (-not (Test-Path -LiteralPath $libraries)) {
-            Write-Host 'LibrariesPath does not exist.'
-            return
-          }
-
-          $checks = @(
-            'libvpx',
-            'libvpx\config.log',
-            'libvpx\vpx.sln',
-            'libvpx\vpx.vcxproj',
-            'libvpx\x64\Release\vpxmt.lib',
-            'local\lib\vpxmt.lib',
-            'cache_keys\libvpx',
-            'cache_keys\libvpx-*'
-          )
-
-          foreach ($relative in $checks) {
-            $path = Join-Path $libraries $relative
-            $items = Get-ChildItem -Path $path -Force -ErrorAction SilentlyContinue
-            if ($items) {
-              Write-Host "FOUND: $relative"
-              $items | Select-Object -First 20 FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 240 | Write-Host
-            } elseif (Test-Path -LiteralPath $path) {
-              $item = Get-Item -LiteralPath $path -Force
-              Write-Host "FOUND: $relative -> $($item.FullName)"
-            } else {
-              Write-Host "MISSING: $relative"
-            }
-          }
-
-          Write-Host 'Recently modified libvpx diagnostic files:'
-          Get-ChildItem -LiteralPath $libraries -Recurse -Force -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match 'libvpx' -and $_.Extension -in '.log', '.err', '.out', '.txt', '.mk', '.tlog' } |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 20 FullName, Length, LastWriteTime |
-            Format-Table -AutoSize | Out-String -Width 240 | Write-Host
-
-          Get-ChildItem -LiteralPath $libraries -Recurse -Force -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match 'libvpx' -and $_.Extension -in '.log', '.err', '.out', '.txt' } |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 5 |
-            ForEach-Object {
-              Write-Host "---- tail: $($_.FullName) ----"
-              Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
-            }
-
       - name: Save ThirdParty cache.
         if: steps.prepare-libraries.outcome == 'success' && steps.cache-third-party.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -397,6 +377,69 @@ jobs:
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
           key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Diagnose failed dependency preparation.
+        if: steps.prepare-libraries.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host 'Prepare libraries failed. Printing focused dependency diagnostics after saving the partial cache.'
+
+          $libraries = $env:LibrariesPath
+          Write-Host "LibrariesPath=$libraries"
+          if (-not (Test-Path -LiteralPath $libraries)) {
+            Write-Host 'LibrariesPath does not exist.'
+            return
+          }
+
+          $checks = @(
+            'libvpx',
+            'libvpx\config.log',
+            'libvpx\vpx.sln',
+            'libvpx\vpx.vcxproj',
+            'libvpx\x64\Release\vpxmt.lib',
+            'local\lib\vpxmt.lib',
+            'cache_keys\libvpx',
+            'cache_keys\libvpx-*'
+          )
+
+          foreach ($relative in $checks) {
+            $path = Join-Path $libraries $relative
+            $items = Get-ChildItem -Path $path -Force -ErrorAction SilentlyContinue
+            if ($items) {
+              Write-Host "FOUND: $relative"
+              $items | Select-Object -First 20 FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 240 | Write-Host
+            } elseif (Test-Path -LiteralPath $path) {
+              $item = Get-Item -LiteralPath $path -Force
+              Write-Host "FOUND: $relative -> $($item.FullName)"
+            } else {
+              Write-Host "MISSING: $relative"
+            }
+          }
+
+          Write-Host 'Recently modified libvpx diagnostic files:'
+          foreach ($root in @('libvpx', 'cache_keys')) {
+            $path = Join-Path $libraries $root
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'libvpx' -and $_.Extension -in '.log', '.err', '.out', '.txt', '.mk', '.tlog' } |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 20 FullName, Length, LastWriteTime |
+              Format-Table -AutoSize | Out-String -Width 240 | Write-Host
+          }
+
+          foreach ($root in @('libvpx', 'cache_keys')) {
+            $path = Join-Path $libraries $root
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'libvpx' -and $_.Extension -in '.log', '.err', '.out', '.txt' } |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 5 |
+              ForEach-Object {
+                Write-Host "---- tail: $($_.FullName) ----"
+                Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
+              }
+          }
 
       - name: Free up disk space after dependency preparation.
         if: always()
