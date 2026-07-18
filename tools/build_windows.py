@@ -385,16 +385,17 @@ def phase_build() -> None:
     configure_args.extend(api_arguments())
     configure_args.extend(["-D", "DESKTOP_APP_DISABLE_AUTOUPDATE=OFF"])
     if config.lower() == "release":
+        pdb_output_dir = src / "out" / config
         configure_args.extend(
             [
                 "-D",
                 "CMAKE_POLICY_DEFAULT_CMP0141=NEW",
                 "-D",
-                "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=ProgramDatabase",
+                "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded",
                 "-D",
-                "CMAKE_EXE_LINKER_FLAGS_RELEASE=/DEBUG /OPT:REF /OPT:ICF",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE=/DEBUG:FULL /OPT:REF /OPT:ICF /INCREMENTAL:NO",
                 "-D",
-                "CMAKE_SHARED_LINKER_FLAGS_RELEASE=/DEBUG /OPT:REF /OPT:ICF",
+                f"CMAKE_PDB_OUTPUT_DIRECTORY_RELEASE={pdb_output_dir}",
             ]
         )
     if not official_parameters():
@@ -429,13 +430,20 @@ def phase_artifact() -> None:
         shutil.rmtree(artifact_dir)
     artifact_dir.mkdir(parents=True)
 
-    required_outputs = [output_dir / "Telegram.exe", output_dir / "Updater.exe", output_dir / "Telegram.pdb"]
-    optional_outputs = [output_dir / "Updater.pdb"]
-    staged_outputs = list(required_outputs)
+    telegram_pdb = output_dir / "Telegram.pdb"
+    updater_pdb = output_dir / "Updater.pdb"
+    required_outputs = [output_dir / "Telegram.exe", output_dir / "Updater.exe"]
+    optional_outputs = [updater_pdb]
+    if config.lower() == "release":
+        required_outputs.append(telegram_pdb)
+    else:
+        optional_outputs.insert(0, telegram_pdb)
+    staged_outputs: list[Path] = []
 
     for path in required_outputs:
         require_file(path, "build output")
         shutil.copy2(path, artifact_dir / path.name)
+        staged_outputs.append(path)
         log(f"staged {path.name}")
     for path in optional_outputs:
         if path.exists():
