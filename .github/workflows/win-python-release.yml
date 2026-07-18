@@ -399,7 +399,7 @@ jobs:
           key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Free up disk space after dependency preparation.
-        if: always() && steps.prepare-libraries.outcome != 'skipped'
+        if: always()
         shell: pwsh
         run: |
           $path = $env:LibrariesPath
