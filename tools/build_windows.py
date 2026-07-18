@@ -383,6 +383,7 @@ def phase_build() -> None:
     if qt:
         configure_args.append(qt)
     configure_args.extend(api_arguments())
+    configure_args.extend(["-D", "DESKTOP_APP_DISABLE_AUTOUPDATE=OFF"])
     if not official_parameters():
         configure_args.extend(
             [
@@ -392,8 +393,6 @@ def phase_build() -> None:
                 "CMAKE_COMPILE_WARNING_AS_ERROR=ON",
                 "-D",
                 "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=",
-                "-D",
-                "DESKTOP_APP_DISABLE_AUTOUPDATE=OFF",
                 "-D",
                 "DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF",
             ]
