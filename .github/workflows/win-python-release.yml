@@ -106,19 +106,22 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
           if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe was not found.' }
-          if (-not (Test-Path -LiteralPath $installer)) { throw 'vs_installer.exe was not found.' }
+          if (-not (Test-Path -LiteralPath $installer)) { throw 'Visual Studio Installer setup.exe was not found.' }
 
           $vsInstance = (& $vswhere -latest -version '[18.0,19.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json) | Select-Object -First 1
           if (-not $vsInstance) { throw 'Visual Studio 2026 / VS 18 with x64 C++ tools was not found.' }
 
           $installPath = $vsInstance.installationPath
           $channelId = $vsInstance.channelId
+          $productId = $vsInstance.productId
           if (-not $installPath) { throw 'Visual Studio 2026 / VS 18 with x64 C++ tools was not found.' }
           if (-not $channelId) { throw 'Visual Studio 2026 channelId was not reported by vswhere.' }
+          if (-not $productId) { throw 'Visual Studio 2026 productId was not reported by vswhere.' }
           Write-Host "Visual Studio 2026: $installPath"
           Write-Host "Visual Studio channelId: $channelId"
+          Write-Host "Visual Studio productId: $productId"
 
           function Get-VcToolsPath {
             $toolsRoot = Join-Path $installPath 'VC\Tools\MSVC'
@@ -147,11 +150,21 @@ jobs:
             'Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL',
             'Microsoft.VisualStudio.Component.VC.14.44.17.14.MFC'
           )
-          $args = @('modify', '--installPath', $installPath, '--channelId', $channelId, '--quiet', '--wait', '--norestart', '--nocache')
-          foreach ($component in $components) { $args += @('--add', $component) }
+          $installerArgs = @('modify', '--installPath', $installPath, '--productId', $productId, '--channelId', $channelId, '--quiet', '--norestart', '--nocache')
+          foreach ($component in $components) { $installerArgs += @('--add', $component) }
 
-          $process = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
+          Write-Host "Installer: $installer"
+          Write-Host "Arguments: $($installerArgs -join ' ')"
+          $process = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru
           if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+            Write-Host 'Recent Visual Studio Installer logs:'
+            Get-ChildItem -Path $env:TEMP -Filter 'dd_setup_*.log' -File -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 3 |
+              ForEach-Object {
+                Write-Host "---- tail: $($_.FullName) ----"
+                Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
+              }
             throw "Visual Studio Installer failed while adding ATL/MFC components. Exit code: $($process.ExitCode)."
           }
 
