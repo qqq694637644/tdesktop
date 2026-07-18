@@ -213,8 +213,6 @@ def required_build_files(src: Path) -> list[Path]:
         require_file(src / "Telegram" / "build" / "prepare" / "prepare.py", "prepare.py"),
         require_file(src / "Telegram" / "build" / "prepare" / "win.bat", "Windows prepare script"),
         require_file(src / "Telegram" / "build" / "qt_version.py", "Qt version resolver"),
-        require_file(src / "Telegram" / "configure.bat", "configure.bat"),
-        require_file(src / "Telegram" / "configure.py", "configure.py"),
         require_file(src / "docs" / "building-win.md", "Windows build documentation"),
     ]
 
@@ -223,8 +221,20 @@ def official_parameters() -> bool:
     return env_bool("TDESKTOP_OFFICIAL_PARAMETERS", True)
 
 
+def python_version() -> str:
+    return ".".join(str(part) for part in sys.version_info[:3])
+
+
 def cache_key(src: Path, sdk: str, toolset: str, arch: str, qt: str, gen: str) -> str:
-    parts = [sdk, toolset, arch, qt or "default", gen or "default", f"official={official_parameters()}"]
+    parts = [
+        sdk,
+        toolset,
+        arch,
+        qt or "default",
+        gen or "default",
+        f"official={official_parameters()}",
+        f"python={python_version()}",
+    ]
     for path in required_build_files(src):
         parts.append(path.as_posix())
         parts.append(sha256_file(path))
@@ -373,6 +383,7 @@ def phase_build() -> None:
     if qt:
         configure_args.append(qt)
     configure_args.extend(api_arguments())
+    configure_args.extend(["-D", "DESKTOP_APP_DISABLE_AUTOUPDATE=OFF"])
     if not official_parameters():
         configure_args.extend(
             [
@@ -382,8 +393,6 @@ def phase_build() -> None:
                 "CMAKE_COMPILE_WARNING_AS_ERROR=ON",
                 "-D",
                 "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=",
-                "-D",
-                "DESKTOP_APP_DISABLE_AUTOUPDATE=OFF",
                 "-D",
                 "DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF",
             ]

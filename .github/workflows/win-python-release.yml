@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Telegram Desktop tag to compile, for example v7.0.1.
+        description: Plain Telegram Desktop tag to compile, for example v7.0.1. Do not include refs/tags/.
         required: true
         type: string
       environment:
@@ -26,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-official-${{ inputs.tag }}-${{ inputs.configuration }}
+  group: windows-release-official-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
     name: Windows x64 ${{ inputs.configuration }}
     environment:
       name: ${{ inputs.environment }}
-    runs-on: windows-2022
+    runs-on: windows-latest
     timeout-minutes: 360
 
     defaults:
@@ -45,20 +45,24 @@ jobs:
       TBUILD: ${{ github.workspace }}\TBuild
       TDESKTOP_SOURCE_DIR: ${{ github.workspace }}\TBuild\tdesktop
       TDESKTOP_RUNNER_DIR: ${{ github.workspace }}\TBuild\runner
-      TDESKTOP_SOURCE_REF: ${{ startsWith(inputs.tag, 'refs/tags/') && inputs.tag || format('refs/tags/{0}', inputs.tag) }}
+      TDESKTOP_TAG_INPUT: ${{ inputs.tag }}
+      TDESKTOP_SOURCE_REF: refs/tags/${{ inputs.tag }}
       TDESKTOP_ARCHITECTURE: x64
       TDESKTOP_CONFIGURATION: ${{ inputs.configuration }}
       TDESKTOP_QT_FLAVOR: default
       TDESKTOP_OFFICIAL_PARAMETERS: true
+      TDESKTOP_CACHE_SCHEMA: v2
       TDESKTOP_GENERATOR: default
       TDESKTOP_USE_TEST_API: false
       TDESKTOP_ONLY_CACHE: false
       TDESKTOP_UPLOAD_ARTIFACT: true
-      TDESKTOP_EXTRA_CMAKE_ARGS: ""
+      # v7.0.1's bundled cmark-gfm reads CMAKE_WARN_DEPRECATED and
+      # CMAKE_ERROR_DEPRECATED before setting CMake CMP0218. Set only that
+      # policy's default for this confirmed tag instead of lowering global
+      # author/deprecated warning strictness.
+      TDESKTOP_EXTRA_CMAKE_ARGS: ${{ inputs.tag == 'v7.0.1' && '-DCMAKE_POLICY_DEFAULT_CMP0218=OLD' || '' }}
       TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID || secrets.API_ID }}
       TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH || secrets.API_HASH }}
-      GYP_MSVS_OVERRIDE_PATH: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\
-      GYP_MSVS_VERSION: 2022
 
     steps:
       - name: Prepare BuildPath.
@@ -72,18 +76,26 @@ jobs:
         with:
           path: TBuild/runner
 
+      - name: Validate tag input.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TDESKTOP_TAG_INPUT -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Tag input must be a plain Telegram Desktop release tag like 'v7.0.1'. Do not include refs/tags/."
+          }
+
       - name: Checkout Telegram Desktop source.
         uses: actions/checkout@v4
         with:
           ref: ${{ env.TDESKTOP_SOURCE_REF }}
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
           path: TBuild/tdesktop
 
       - name: Setup Python.
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.10.11"
 
       - name: Validate deployment API credentials.
         shell: pwsh
@@ -102,35 +114,185 @@ jobs:
           cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py github-env
 
-      - name: Verify Windows x64 toolchain.
+      - name: Validate supported hosted toolchain.
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) { throw "vswhere.exe was not found." }
-
-          $installPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) | Select-Object -First 1
-          if (-not $installPath) { throw "Visual Studio with x64 C++ tools was not found." }
-          Write-Host "Visual Studio: $installPath"
-
-          $atlbase = Get-ChildItem -LiteralPath (Join-Path $installPath 'VC') -Recurse -Force -Filter atlbase.h -ErrorAction SilentlyContinue | Select-Object -First 1
-          $atlcomcli = Get-ChildItem -LiteralPath (Join-Path $installPath 'VC') -Recurse -Force -Filter atlcomcli.h -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $atlbase -or -not $atlcomcli) {
-            throw "ATL headers were not found in the runner Visual Studio installation; breakpad requires atlbase.h and atlcomcli.h."
+          if ($env:MSVC_TOOLSET -ne '14.44') {
+            throw "This hosted workflow currently supports tags whose Windows docs request MSVC toolset 14.44. Parsed '$env:MSVC_TOOLSET' from $env:TDESKTOP_TAG_INPUT."
           }
-          Write-Host "ATL: $($atlbase.DirectoryName)"
+          if ($env:SDK -ne '10.0.26100.0') {
+            throw "This hosted workflow currently supports tags whose Windows docs request SDK 10.0.26100.0. Parsed '$env:SDK' from $env:TDESKTOP_TAG_INPUT."
+          }
+
+      - name: Ensure VS2026 ATL/MFC components.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe was not found.' }
+          if (-not (Test-Path -LiteralPath $installer)) { throw 'Visual Studio Installer setup.exe was not found.' }
+
+          $vsInstance = (& $vswhere -latest -version '[18.0,19.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json) | Select-Object -First 1
+          if (-not $vsInstance) { throw 'Visual Studio 2026 / VS 18 with x64 C++ tools was not found.' }
+
+          $installPath = $vsInstance.installationPath
+          $channelId = $vsInstance.channelId
+          $productId = $vsInstance.productId
+          if (-not $installPath) { throw 'Visual Studio 2026 / VS 18 with x64 C++ tools was not found.' }
+          if (-not $channelId) { throw 'Visual Studio 2026 channelId was not reported by vswhere.' }
+          if (-not $productId) { throw 'Visual Studio 2026 productId was not reported by vswhere.' }
+          Write-Host "Visual Studio 2026: $installPath"
+          Write-Host "Visual Studio channelId: $channelId"
+          Write-Host "Visual Studio productId: $productId"
+
+          function Get-VcToolsPath {
+            $toolsRoot = Join-Path $installPath 'VC\Tools\MSVC'
+            if (-not (Test-Path -LiteralPath $toolsRoot)) { return $null }
+            Get-ChildItem -LiteralPath $toolsRoot -Directory |
+              Where-Object { $_.Name.StartsWith($env:MSVC_TOOLSET) } |
+              Sort-Object Name -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          function Test-AtlHeaders {
+            $vcToolsPath = Get-VcToolsPath
+            if (-not $vcToolsPath) { return $false }
+            $includePath = Join-Path $vcToolsPath 'ATLMFC\include'
+            return (Test-Path -LiteralPath (Join-Path $includePath 'atlbase.h')) -and
+              (Test-Path -LiteralPath (Join-Path $includePath 'atlcomcli.h'))
+          }
+
+          if (Test-AtlHeaders) {
+            Write-Host 'Required ATL/MFC headers are already installed.'
+            return
+          }
+
+          Write-Host "Required ATL/MFC headers are missing. Adding VS2026 v14.44 ATL/MFC components."
+          $components = @(
+            'Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL',
+            'Microsoft.VisualStudio.Component.VC.14.44.17.14.MFC'
+          )
+          $installerArgs = @('modify', '--installPath', $installPath, '--productId', $productId, '--channelId', $channelId, '--quiet', '--norestart', '--nocache')
+          foreach ($component in $components) { $installerArgs += @('--add', $component) }
+
+          Write-Host "Installer: $installer"
+          Write-Host "Arguments: $($installerArgs -join ' ')"
+          $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+          $processInfo.FileName = $installer
+          $processInfo.UseShellExecute = $false
+          foreach ($argument in $installerArgs) {
+            [void]$processInfo.ArgumentList.Add($argument)
+          }
+
+          $process = [System.Diagnostics.Process]::Start($processInfo)
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+            Write-Host 'Recent Visual Studio Installer logs:'
+            Get-ChildItem -Path $env:TEMP -Filter 'dd_setup_*.log' -File -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 3 |
+              ForEach-Object {
+                Write-Host "---- tail: $($_.FullName) ----"
+                Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
+              }
+            throw "Visual Studio Installer failed while adding ATL/MFC components. Exit code: $($process.ExitCode)."
+          }
+
+          if (-not (Test-AtlHeaders)) {
+            throw 'ATL/MFC installation finished, but atlbase.h or atlcomcli.h is still missing.'
+          }
+
+          Write-Host 'Required ATL/MFC headers are installed.'
 
       - name: Native Tools Command Prompt.
-        uses: Eden-CI/msvc-dev-cmd@master
+        uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
         with:
           arch: ${{ env.MSVC_ARCH }}
           sdk: ${{ env.SDK }}
           toolset: ${{ env.MSVC_TOOLSET }}
+          vsversion: "2026"
+
+      - name: Verify official Windows build environment.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host "VSINSTALLDIR=$env:VSINSTALLDIR"
+          Write-Host "VisualStudioVersion=$env:VisualStudioVersion"
+          Write-Host "VCToolsVersion=$env:VCToolsVersion"
+          Write-Host "VSCMD_ARG_VCVARS_VER=$env:VSCMD_ARG_VCVARS_VER"
+          Write-Host "WindowsSDKVersion=$env:WindowsSDKVersion"
+
+          if (-not $env:VSINSTALLDIR) {
+            throw 'Native Visual Studio environment was not initialized.'
+          }
+          if ($env:VSINSTALLDIR -notmatch '\\Microsoft Visual Studio\\18\\') {
+            throw "Official Windows build docs require Visual Studio 2026 / VS 18; selected VSINSTALLDIR is '$env:VSINSTALLDIR'."
+          }
+          if ($env:VSCMD_ARG_VCVARS_VER -ne $env:MSVC_TOOLSET) {
+            throw "Expected vcvars toolset '$env:MSVC_TOOLSET', got '$env:VSCMD_ARG_VCVARS_VER'."
+          }
+          if (-not $env:VCToolsVersion -or -not $env:VCToolsVersion.StartsWith($env:MSVC_TOOLSET)) {
+            throw "Expected MSVC tools '$env:MSVC_TOOLSET', got '$env:VCToolsVersion'."
+          }
+          if (-not $env:WindowsSDKVersion -or -not $env:WindowsSDKVersion.StartsWith($env:SDK)) {
+            throw "Expected Windows SDK '$env:SDK', got '$env:WindowsSDKVersion'."
+          }
+
+          $cl = Get-Command cl.exe -ErrorAction Stop
+          Write-Host "cl.exe=$($cl.Source)"
+
+          $includeDirs = ($env:INCLUDE -split ';') | Where-Object { $_ }
+          foreach ($header in @('atlbase.h', 'atlcomcli.h')) {
+            $found = $includeDirs | Where-Object { Test-Path -LiteralPath (Join-Path $_ $header) } | Select-Object -First 1
+            if (-not $found) {
+              throw "Required ATL header '$header' was not found in INCLUDE. Breakpad requires ATL/MFC components."
+            }
+            Write-Host "$header=$found"
+          }
 
       - name: NuGet sources.
+        shell: pwsh
         run: |
-          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
-          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+          $ErrorActionPreference = 'Stop'
+          & nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'Microsoft Visual Studio Offline Packages source was not disabled; continuing because this source may be absent.'
+          }
+
+          $nugetOrg = 'https://api.nuget.org/v3/index.json'
+          $sourcesOutput = & nuget sources List -Format Detailed
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to list NuGet sources.' }
+          $sources = $sourcesOutput | Out-String
+          if ($sources -match [regex]::Escape($nugetOrg)) {
+            $sourceName = $null
+            $sourceState = $null
+            $lines = @($sourcesOutput)
+            for ($i = 0; $i -lt $lines.Count; ++$i) {
+              if ($lines[$i] -notmatch [regex]::Escape($nugetOrg)) { continue }
+              for ($j = $i - 1; $j -ge 0; --$j) {
+                if ($lines[$j] -match '^\s*\d+\.\s+(.+?)\s+\[(Enabled|Disabled)\]\s*$') {
+                  $sourceName = $Matches[1]
+                  $sourceState = $Matches[2]
+                  break
+                }
+              }
+              break
+            }
+
+            if (-not $sourceName) { throw "Found NuGet source URL but could not determine its source name: $nugetOrg" }
+            Write-Host "NuGet source already configured: $sourceName [$sourceState] -> $nugetOrg"
+            if ($sourceState -ne 'Enabled') {
+              & nuget sources Enable -Name $sourceName
+              if ($LASTEXITCODE -ne 0) { throw "Failed to enable NuGet source: $sourceName" }
+            }
+          } else {
+            & nuget sources Add -Name 'nuget.org' -Source $nugetOrg
+            if ($LASTEXITCODE -ne 0) { throw "Failed to add NuGet source: $nugetOrg" }
+          }
 
       - name: Patch CMake MSVC debug flags.
         run: |
@@ -144,15 +306,14 @@ jobs:
 
       - name: ThirdParty cache.
         id: cache-third-party
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.TDESKTOP_THIRD_PARTY_PATH }}
-          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-
+          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
 
       - name: Libraries cache.
         id: cache-libs
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.LibrariesPath }}\*
@@ -160,25 +321,149 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
+
+      - name: Partial Libraries cache.
+        id: cache-libs-partial
+        if: steps.cache-libs.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-
+            ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-
 
       - name: Qt cache.
         id: cache-qt
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-${{ env.TDESKTOP_CACHE_KEY }}
-          restore-keys: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
 
       - name: Prepare libraries.
+        id: prepare-libraries
+        if: >-
+          steps.cache-third-party.outputs.cache-hit != 'true' ||
+          steps.cache-libs.outputs.cache-hit != 'true' ||
+          steps.cache-qt.outputs.cache-hit != 'true'
+        continue-on-error: true
         run: |
           cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py prepare
 
+      - name: Save ThirdParty cache.
+        if: steps.prepare-libraries.outcome == 'success' && steps.cache-third-party.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.TDESKTOP_THIRD_PARTY_PATH }}
+          key: ${{ runner.os }}-${{ runner.arch }}-tdesktop-third-party-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
+
+      - name: Save Libraries cache.
+        if: steps.prepare-libraries.outcome == 'success' && steps.cache-libs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
+
+      - name: Save Qt cache.
+        if: steps.prepare-libraries.outcome == 'success' && steps.cache-qt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-default-tdesktop-qt-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}
+
+      - name: Save partial Libraries cache.
+        if: steps.prepare-libraries.outcome == 'failure'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_SCHEMA }}-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Diagnose failed dependency preparation.
+        if: steps.prepare-libraries.outcome == 'failure'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host 'Prepare libraries failed. Printing focused dependency diagnostics after saving the partial cache.'
+
+          $libraries = $env:LibrariesPath
+          Write-Host "LibrariesPath=$libraries"
+          if (-not (Test-Path -LiteralPath $libraries)) {
+            Write-Host 'LibrariesPath does not exist.'
+            return
+          }
+
+          $checks = @(
+            'libvpx',
+            'libvpx\config.log',
+            'libvpx\vpx.sln',
+            'libvpx\vpx.vcxproj',
+            'libvpx\x64\Release\vpxmt.lib',
+            'local\lib\vpxmt.lib',
+            'cache_keys\libvpx',
+            'cache_keys\libvpx-*'
+          )
+
+          foreach ($relative in $checks) {
+            $path = Join-Path $libraries $relative
+            $items = Get-ChildItem -Path $path -Force -ErrorAction SilentlyContinue
+            if ($items) {
+              Write-Host "FOUND: $relative"
+              $items | Select-Object -First 20 FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 240 | Write-Host
+            } elseif (Test-Path -LiteralPath $path) {
+              $item = Get-Item -LiteralPath $path -Force
+              Write-Host "FOUND: $relative -> $($item.FullName)"
+            } else {
+              Write-Host "MISSING: $relative"
+            }
+          }
+
+          Write-Host 'Recently modified libvpx diagnostic files:'
+          foreach ($root in @('libvpx', 'cache_keys')) {
+            $path = Join-Path $libraries $root
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'libvpx' -and $_.Extension -in '.log', '.err', '.out', '.txt', '.mk', '.tlog' } |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 20 FullName, Length, LastWriteTime |
+              Format-Table -AutoSize | Out-String -Width 240 | Write-Host
+          }
+
+          foreach ($root in @('libvpx', 'cache_keys')) {
+            $path = Join-Path $libraries $root
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            Get-ChildItem -LiteralPath $path -Recurse -Force -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'libvpx' -and $_.Extension -in '.log', '.err', '.out', '.txt' } |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 5 |
+              ForEach-Object {
+                Write-Host "---- tail: $($_.FullName) ----"
+                Get-Content -LiteralPath $_.FullName -Tail 120 -ErrorAction SilentlyContinue
+              }
+          }
+
       - name: Free up disk space after dependency preparation.
+        if: always()
         shell: pwsh
         run: |
           $path = $env:LibrariesPath
@@ -196,6 +481,10 @@ jobs:
             Sort-Object FullName -Descending |
             Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1) } |
             Remove-Item -Force
+
+      - name: Stop after failed dependency preparation.
+        if: steps.prepare-libraries.outcome == 'failure'
+        run: exit /b 1
 
       - name: Telegram Desktop build.
         run: |
