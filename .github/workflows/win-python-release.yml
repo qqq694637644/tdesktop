@@ -106,6 +106,7 @@ jobs:
           arch: ${{ env.MSVC_ARCH }}
           sdk: ${{ env.SDK }}
           toolset: ${{ env.MSVC_TOOLSET }}
+          vsversion: "2026"
 
       - name: Verify official Windows build environment.
         shell: pwsh
@@ -127,7 +128,7 @@ jobs:
           if ($env:VSCMD_ARG_VCVARS_VER -ne $env:MSVC_TOOLSET) {
             throw "Expected vcvars toolset '$env:MSVC_TOOLSET', got '$env:VSCMD_ARG_VCVARS_VER'."
           }
-          if ($env:VCToolsVersion -and -not $env:VCToolsVersion.StartsWith($env:MSVC_TOOLSET)) {
+          if (-not $env:VCToolsVersion -or -not $env:VCToolsVersion.StartsWith($env:MSVC_TOOLSET)) {
             throw "Expected MSVC tools '$env:MSVC_TOOLSET', got '$env:VCToolsVersion'."
           }
           if (-not $env:WindowsSDKVersion -or -not $env:WindowsSDKVersion.StartsWith($env:SDK)) {
@@ -193,8 +194,10 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}
-          restore-keys: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-
+            ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-
 
       - name: Qt cache.
         id: cache-qt
@@ -298,7 +301,7 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}
+          key: ${{ runner.os }}-${{ env.TDESKTOP_ARCHITECTURE }}-tdesktop-libs-partial-${{ env.TDESKTOP_CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Stop after failed dependency preparation.
         if: steps.prepare-libraries.outcome == 'failure'
