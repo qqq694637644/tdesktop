@@ -100,6 +100,61 @@ jobs:
           cd /d "%TDESKTOP_RUNNER_DIR%"
           python tools\build_windows.py github-env
 
+      - name: Ensure VS2026 ATL/MFC components.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+          if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe was not found.' }
+          if (-not (Test-Path -LiteralPath $installer)) { throw 'vs_installer.exe was not found.' }
+
+          $installPath = (& $vswhere -latest -version '[18.0,19.0)' -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) | Select-Object -First 1
+          if (-not $installPath) { throw 'Visual Studio 2026 / VS 18 with x64 C++ tools was not found.' }
+          Write-Host "Visual Studio 2026: $installPath"
+
+          function Get-VcToolsPath {
+            $toolsRoot = Join-Path $installPath 'VC\Tools\MSVC'
+            if (-not (Test-Path -LiteralPath $toolsRoot)) { return $null }
+            Get-ChildItem -LiteralPath $toolsRoot -Directory |
+              Where-Object { $_.Name.StartsWith($env:MSVC_TOOLSET) } |
+              Sort-Object Name -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          function Test-AtlHeaders {
+            $vcToolsPath = Get-VcToolsPath
+            if (-not $vcToolsPath) { return $false }
+            $includePath = Join-Path $vcToolsPath 'ATLMFC\include'
+            return (Test-Path -LiteralPath (Join-Path $includePath 'atlbase.h')) -and
+              (Test-Path -LiteralPath (Join-Path $includePath 'atlcomcli.h'))
+          }
+
+          if (Test-AtlHeaders) {
+            Write-Host 'Required ATL/MFC headers are already installed.'
+            return
+          }
+
+          Write-Host "Required ATL/MFC headers are missing. Adding VS2026 v14.44 ATL/MFC components."
+          $components = @(
+            'Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL',
+            'Microsoft.VisualStudio.Component.VC.14.44.17.14.MFC'
+          )
+          $args = @('modify', '--installPath', $installPath, '--quiet', '--wait', '--norestart', '--nocache')
+          foreach ($component in $components) { $args += @('--add', $component) }
+
+          $process = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
+          if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
+            throw "Visual Studio Installer failed while adding ATL/MFC components. Exit code: $($process.ExitCode)."
+          }
+
+          if (-not (Test-AtlHeaders)) {
+            throw 'ATL/MFC installation finished, but atlbase.h or atlcomcli.h is still missing.'
+          }
+
+          Write-Host 'Required ATL/MFC headers are installed.'
+
       - name: Native Tools Command Prompt.
         uses: Eden-CI/msvc-dev-cmd@master
         with:
