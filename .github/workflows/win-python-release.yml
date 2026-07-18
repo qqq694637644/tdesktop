@@ -56,10 +56,11 @@ jobs:
       TDESKTOP_USE_TEST_API: false
       TDESKTOP_ONLY_CACHE: false
       TDESKTOP_UPLOAD_ARTIFACT: true
-      # v7.0.1's bundled cmark-gfm trips newer hosted-runner CMake policy diagnostics.
-      # Keep this compatibility flag scoped to that confirmed tag instead of applying
-      # it to every future or older release tag.
-      TDESKTOP_EXTRA_CMAKE_ARGS: ${{ inputs.tag == 'v7.0.1' && '-Wno-error=author -Wno-error=policy' || '' }}
+      # v7.0.1's bundled cmark-gfm reads CMAKE_WARN_DEPRECATED and
+      # CMAKE_ERROR_DEPRECATED before setting CMake CMP0218. Set only that
+      # policy's default for this confirmed tag instead of lowering global
+      # author/deprecated warning strictness.
+      TDESKTOP_EXTRA_CMAKE_ARGS: ${{ inputs.tag == 'v7.0.1' && '-DCMAKE_POLICY_DEFAULT_CMP0218=OLD' || '' }}
       TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID || secrets.API_ID }}
       TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH || secrets.API_HASH }}
 
