@@ -384,6 +384,19 @@ def phase_build() -> None:
         configure_args.append(qt)
     configure_args.extend(api_arguments())
     configure_args.extend(["-D", "DESKTOP_APP_DISABLE_AUTOUPDATE=OFF"])
+    if config.lower() == "release":
+        configure_args.extend(
+            [
+                "-D",
+                "CMAKE_POLICY_DEFAULT_CMP0141=NEW",
+                "-D",
+                "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=ProgramDatabase",
+                "-D",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE=/DEBUG /OPT:REF /OPT:ICF",
+                "-D",
+                "CMAKE_SHARED_LINKER_FLAGS_RELEASE=/DEBUG /OPT:REF /OPT:ICF",
+            ]
+        )
     if not official_parameters():
         configure_args.extend(
             [
@@ -416,11 +429,19 @@ def phase_artifact() -> None:
         shutil.rmtree(artifact_dir)
     artifact_dir.mkdir(parents=True)
 
-    required_outputs = [output_dir / "Telegram.exe", output_dir / "Updater.exe"]
+    required_outputs = [output_dir / "Telegram.exe", output_dir / "Updater.exe", output_dir / "Telegram.pdb"]
+    optional_outputs = [output_dir / "Updater.pdb"]
+    staged_outputs = list(required_outputs)
+
     for path in required_outputs:
         require_file(path, "build output")
         shutil.copy2(path, artifact_dir / path.name)
         log(f"staged {path.name}")
+    for path in optional_outputs:
+        if path.exists():
+            shutil.copy2(path, artifact_dir / path.name)
+            staged_outputs.append(path)
+            log(f"staged optional {path.name}")
 
     commit = "unknown"
     try:
@@ -436,7 +457,7 @@ def phase_artifact() -> None:
         "qt": metadata["TDESKTOP_RESOLVED_QT"] or "default",
         "generator": metadata["TDESKTOP_RESOLVED_GENERATOR"] or "default",
         "official_parameters": official_parameters(),
-        "outputs": file_hashes(required_outputs),
+        "outputs": file_hashes(staged_outputs),
         "note": "Unsigned GitHub Actions build; byte identity with Telegram official releases is not guaranteed.",
     }
     (artifact_dir / "build-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
