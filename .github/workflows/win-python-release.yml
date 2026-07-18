@@ -155,7 +155,15 @@ jobs:
 
           Write-Host "Installer: $installer"
           Write-Host "Arguments: $($installerArgs -join ' ')"
-          $process = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru
+          $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+          $processInfo.FileName = $installer
+          $processInfo.UseShellExecute = $false
+          foreach ($argument in $installerArgs) {
+            [void]$processInfo.ArgumentList.Add($argument)
+          }
+
+          $process = [System.Diagnostics.Process]::Start($processInfo)
+          $process.WaitForExit()
           if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) {
             Write-Host 'Recent Visual Studio Installer logs:'
             Get-ChildItem -Path $env:TEMP -Filter 'dd_setup_*.log' -File -ErrorAction SilentlyContinue |
@@ -175,7 +183,7 @@ jobs:
           Write-Host 'Required ATL/MFC headers are installed.'
 
       - name: Native Tools Command Prompt.
-        uses: Eden-CI/msvc-dev-cmd@master
+        uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
         with:
           arch: ${{ env.MSVC_ARCH }}
           sdk: ${{ env.SDK }}
