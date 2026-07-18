@@ -213,14 +213,16 @@ def required_build_files(src: Path) -> list[Path]:
         require_file(src / "Telegram" / "build" / "prepare" / "prepare.py", "prepare.py"),
         require_file(src / "Telegram" / "build" / "prepare" / "win.bat", "Windows prepare script"),
         require_file(src / "Telegram" / "build" / "qt_version.py", "Qt version resolver"),
-        require_file(src / "Telegram" / "configure.bat", "configure.bat"),
-        require_file(src / "Telegram" / "configure.py", "configure.py"),
         require_file(src / "docs" / "building-win.md", "Windows build documentation"),
     ]
 
 
 def official_parameters() -> bool:
     return env_bool("TDESKTOP_OFFICIAL_PARAMETERS", True)
+
+
+def python_version() -> str:
+    return ".".join(str(part) for part in sys.version_info[:3])
 
 
 def cache_key(src: Path, sdk: str, toolset: str, arch: str, qt: str, gen: str) -> str:
@@ -231,7 +233,7 @@ def cache_key(src: Path, sdk: str, toolset: str, arch: str, qt: str, gen: str) -
         qt or "default",
         gen or "default",
         f"official={official_parameters()}",
-        f"extra_cmake_args={env_value('TDESKTOP_EXTRA_CMAKE_ARGS')}",
+        f"python={python_version()}",
     ]
     for path in required_build_files(src):
         parts.append(path.as_posix())

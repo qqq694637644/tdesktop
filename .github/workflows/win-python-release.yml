@@ -26,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-official-${{ inputs.tag }}-${{ inputs.configuration }}
+  group: windows-release-official-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -59,7 +59,7 @@ jobs:
       # v7.0.1's bundled cmark-gfm trips newer hosted-runner CMake policy diagnostics.
       # Keep this compatibility flag scoped to that confirmed tag instead of applying
       # it to every future or older release tag.
-      TDESKTOP_EXTRA_CMAKE_ARGS: ${{ inputs.tag == 'v7.0.1' && '-Wno-error=policy' || '' }}
+      TDESKTOP_EXTRA_CMAKE_ARGS: ${{ inputs.tag == 'v7.0.1' && '-Wno-error=author -Wno-error=policy' || '' }}
       TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID || secrets.API_ID }}
       TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH || secrets.API_HASH }}
 
@@ -88,13 +88,13 @@ jobs:
         with:
           ref: ${{ env.TDESKTOP_SOURCE_REF }}
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
           path: TBuild/tdesktop
 
       - name: Setup Python.
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.10.11"
 
       - name: Validate deployment API credentials.
         shell: pwsh
@@ -267,7 +267,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Failed to list NuGet sources.' }
           $sources = $sourcesOutput | Out-String
           if ($sources -match [regex]::Escape($nugetOrg)) {
-            Write-Host "NuGet source already configured: $nugetOrg"
+            $sourceName = $null
+            $sourceState = $null
+            $lines = @($sourcesOutput)
+            for ($i = 0; $i -lt $lines.Count; ++$i) {
+              if ($lines[$i] -notmatch [regex]::Escape($nugetOrg)) { continue }
+              for ($j = $i - 1; $j -ge 0; --$j) {
+                if ($lines[$j] -match '^\s*\d+\.\s+(.+?)\s+\[(Enabled|Disabled)\]\s*$') {
+                  $sourceName = $Matches[1]
+                  $sourceState = $Matches[2]
+                  break
+                }
+              }
+              break
+            }
+
+            if (-not $sourceName) { throw "Found NuGet source URL but could not determine its source name: $nugetOrg" }
+            Write-Host "NuGet source already configured: $sourceName [$sourceState] -> $nugetOrg"
+            if ($sourceState -ne 'Enabled') {
+              & nuget sources Enable -Name $sourceName
+              if ($LASTEXITCODE -ne 0) { throw "Failed to enable NuGet source: $sourceName" }
+            }
           } else {
             & nuget sources Add -Name 'nuget.org' -Source $nugetOrg
             if ($LASTEXITCODE -ne 0) { throw "Failed to add NuGet source: $nugetOrg" }
